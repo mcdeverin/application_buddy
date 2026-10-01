@@ -1,2 +1,2 @@
 # job_tracker
-AI-native application tracker with persistent interview memory.
+A personal AI job search assistant that finds relevant opportunities, tracks applications automatically, and learns from every step of your search.

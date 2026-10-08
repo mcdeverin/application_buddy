@@ -1,4 +1,11 @@
-export default function Home() {
+import { redirect } from "next/navigation";
+import { createClient } from "../../utils/supabase/server";
+
+export default async function Home() {
+  const supabase = await createClient();
+  const { data } = await supabase.auth.getClaims();
+  if (!data?.claims) redirect("/login");
+  const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "America/New_York" });
   return (
     <main className="min-h-screen bg-[#F8F8F6] text-[#171717]">
       <div className="flex min-h-screen">
@@ -9,7 +16,7 @@ export default function Home() {
               ✦
             </div>
             <span className="text-lg font-semibold tracking-tight">
-              job_tracker
+              Application Buddy
             </span>
           </div>
 
@@ -21,7 +28,10 @@ export default function Home() {
           </nav>
 
           <div className="mt-auto">
-            <NavItem label="Me" />
+            <p className="mb-3 truncate text-xs text-neutral-500">{String(data.claims.email ?? "")}</p>
+            <form action="/auth/signout" method="post">
+              <button className="w-full rounded-xl px-3 py-2.5 text-left text-sm text-neutral-500 hover:bg-neutral-50">Sign out</button>
+            </form>
           </div>
         </aside>
 
@@ -31,11 +41,11 @@ export default function Home() {
             {/* Header */}
             <header className="mb-12">
               <p className="mb-2 text-sm text-neutral-500">
-                Wednesday, September 30
+                {today}
               </p>
 
               <h1 className="text-4xl font-semibold tracking-[-0.04em]">
-                Good evening, Macauley.
+                Welcome to Application Buddy.
               </h1>
 
               <p className="mt-3 text-lg text-neutral-500">
@@ -43,6 +53,9 @@ export default function Home() {
               </p>
             </header>
 
+            <p role="status" className="mb-8 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              Dashboard preview · The items below are examples. Application tracking and email sync are not connected yet.
+            </p>
             {/* Fresh Matches */}
             <section className="mb-12">
               <SectionHeader title="Fresh matches" action="See all" />

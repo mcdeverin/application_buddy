@@ -5,6 +5,7 @@ import { createClient } from "../../../utils/supabase/server";
 import { decrypt, encrypt, exchangeTokens, gmailGet } from "@/lib/gmail";
 import { suggestEmail, emailText, type GmailPart } from "@/lib/email-parser";
 import { readSyncWindow, writeSyncWindow, resolveSyncWindow } from "@/lib/sync-window";
+import { applicationEmailQuery, classifyApplicationEmail } from "@/lib/email-filter";
 import { statuses, validUuid } from "@/lib/tracker";
 import type { MutationState } from "../tracker-actions";
 
@@ -29,26 +30,42 @@ export async function syncEmails(requestedFrom?: string): Promise<MutationState>
       if (tokenError) throw new Error("Could not refresh your Gmail connection.");
     }
     const after = Math.floor(new Date(window.from).getTime() / 1000);
-    const params = new URLSearchParams({ maxResults: "30", q: `after:${after} -in:spam -in:trash {application applied interview recruiting recruiter candidacy candidate employment \"job offer\" \"thank you for applying\"}` });
+    const params = new URLSearchParams({ maxResults: "30", q: `after:${after} -in:spam -in:trash -in:sent ${applicationEmailQuery}` });
     if (window.next) params.set("pageToken", window.next);
     const page = await gmailGet<{ messages?: { id: string }[]; nextPageToken?: string }>(`messages?${params}`, accessToken);
     let imported = 0;
+    let skipped = 0;
     for (const message of page.messages ?? []) {
       const { data: existing, error: lookupError } = await auth.supabase.from("email_imports").select("id").eq("user_id", auth.userId).eq("mailbox_email", connection.email).eq("gmail_message_id", message.id).maybeSingle();
       if (lookupError) throw new Error("Could not check previously imported emails.");
       if (existing) continue;
-      const full = await gmailGet<{ payload: GmailPart; snippet?: string; internalDate: string }>(`messages/${encodeURIComponent(message.id)}?format=full`, accessToken);
+      const full = await gmailGet<{ payload: GmailPart; snippet?: string; internalDate: string; threadId?: string }>(`messages/${encodeURIComponent(message.id)}?format=full`, accessToken);
       if (Number(full.internalDate) < new Date(window.from).getTime()) continue;
       const header = (name: string) => full.payload.headers?.find(h => h.name.toLowerCase() === name)?.value ?? "";
       const subject = header("subject").slice(0, 1000);
       const body = emailText(full.payload) || full.snippet || "";
+      let evidence = classifyApplicationEmail(subject, body, header("from"));
+      let inheritedThread = false;
+      // A short reply inherits evidence only from another message in this exact Gmail thread.
+      if (!evidence && /^(re:)/i.test(subject) && full.threadId) {
+        const thread = await gmailGet<{ messages?: { payload: GmailPart }[] }>(`threads/${encodeURIComponent(full.threadId)}?format=full`, accessToken);
+        evidence = [...(thread.messages ?? [])].reverse().map(message => {
+          const headers = message.payload.headers ?? [];
+          const value = (name: string) => headers.find(h => h.name.toLowerCase() === name)?.value ?? "";
+          return classifyApplicationEmail(value("subject"), emailText(message.payload), value("from"));
+        }).find(item => item !== null) ?? null;
+        inheritedThread = !!evidence;
+      }
+      if (!evidence) { skipped++; continue; }
       const suggestion = suggestEmail(subject, body);
+      if (evidence.kind === "confirmation") suggestion.status = "Applied";
+      if (evidence.kind === "interview" && !["Rejected", "Offer", "Final"].includes(suggestion.status)) suggestion.status = "Interview";
       const { error: insertError } = await auth.supabase.from("email_imports").upsert({
         user_id: auth.userId, gmail_message_id: message.id, mailbox_email: connection.email,
         subject, sender: header("from").slice(0, 1000), excerpt: body.slice(0, 4000),
         received_at: new Date(Number(full.internalDate)).toISOString(),
         suggested_company: suggestion.company, suggested_role: suggestion.role,
-        suggested_status: suggestion.status, reason: suggestion.reason,
+        suggested_status: suggestion.status, reason: inheritedThread ? `Verified application thread: ${evidence.reason}` : evidence.reason,
       }, { onConflict: "user_id,mailbox_email,gmail_message_id", ignoreDuplicates: true });
       if (insertError) throw new Error("Could not save the review queue. Try syncing again.");
       imported++;
@@ -56,7 +73,7 @@ export async function syncEmails(requestedFrom?: string): Promise<MutationState>
     const { error: saveError } = await auth.supabase.from("email_connections").update({ page_token: writeSyncWindow({ from: window.from, next: page.nextPageToken ?? null }), last_synced_at: new Date().toISOString() }).eq("user_id", auth.userId).eq("email", connection.email).eq("connected_at", connection.connected_at);
     if (saveError) throw new Error("Could not save sync progress. Imported emails are safe; try again.");
     revalidatePath("/email");
-    return { message: `${imported} email${imported === 1 ? "" : "s"} added for review.${page.nextPageToken ? " Sync again to read the next batch." : ""}`, saved: Date.now() };
+    return { message: `${imported} application email${imported === 1 ? "" : "s"} added for review. ${skipped} unrelated email${skipped === 1 ? "" : "s"} skipped.${page.nextPageToken ? " Sync again to read the next batch." : ""}`, saved: Date.now() };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Gmail sync failed. Try again." };
   }

@@ -60,7 +60,7 @@ Testing-mode Google refresh tokens may expire after seven days; reconnect when n
 
 Tokens use AES-256-GCM encryption at rest. The encryption key stays server-side. Changing this key requires reconnecting Gmail. Disconnect removes stored credentials; you can additionally revoke app access in your Google account permissions. Reconnecting starts a new capture window; existing imports remain.
 
-Message matching is a keyword search, not guaranteed coverage of every recruiter email. Parsed suggestions are heuristic, not AI. Every update requires review; resume versions are not available from confirmation emails.
+Message matching uses a focused Gmail search followed by a classifier requiring application or interview evidence. Job alerts, postings, shopping emails, financial applications and newsletters are excluded. Short incoming replies may inherit evidence from their exact Gmail thread. Old unrelated pending imports are hidden, without deleting their stored records. This heuristic is not guaranteed to catch every recruiter email. Parsed suggestions are heuristic, not AI. Every update requires review; resume versions are not available from confirmation emails.
 
 ## Checks
 

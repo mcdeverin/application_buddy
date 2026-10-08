@@ -30,7 +30,9 @@ export function DemoAssistant({ data }: { data: DemoData }) {
     if (!text.trim()) return;
     const q = text.toLowerCase();
     let answer: string;
-    if (/compar|offer|salary|compensation/.test(q)) {
+    if (/glassdoor|employee reviews|reviews/.test(q)) {
+      answer = `This demo does not retrieve actual Glassdoor reviews for ${company.company}. The following is an illustrative review-analysis framework, not employee feedback or verified claims about this company.\n\nBefore your final interview, look for recent patterns in reviews from the relevant team and location:\n• Manager support and clarity of expectations.\n• Workload, working hours, and staffing.\n• Promotion paths and development opportunities.\n• Whether promised flexibility matches employees' experience.\n\nTurn those themes into questions: “How does the team prioritize during a busy period?” and “What does progression in this role typically look like?” Treat individual reviews as perspectives to investigate rather than conclusions.`;
+    } else if (/compar|offer|salary|compensation/.test(q)) {
       setCompare(true);
       answer = "Use the sample offer comparison below. Choose two companies and edit their illustrative terms. These are hypothetical offers, not offers received by the sample candidate. Bonus amounts are targets; equity is not included in cash totals.";
     } else if (/prep|interview|question|ask/.test(q)) {
@@ -57,7 +59,7 @@ export function DemoAssistant({ data }: { data: DemoData }) {
       <p className="mt-2 text-sm text-neutral-500">Sample responses from fictional profiles and your demo tracker. No live AI or web research is connected.</p>
       <label htmlFor="assistant-company" className="mt-5 block text-sm font-medium">Company context</label>
       <select id="assistant-company" value={companyId} onChange={event => setCompanyId(event.target.value)} className={`${inputStyle} mt-2`}>{data.applications.map(app => <option key={app.id} value={app.id}>{app.company}</option>)}</select>
-      <div className="mt-4 flex flex-wrap gap-2">{["Tell me about this company", "Help me prepare for my interview", "What is my next step?", "Compare sample offers"].map(prompt => <button key={prompt} onClick={() => ask(prompt)} className="rounded-full border border-black/10 px-3 py-2 text-xs hover:bg-[#EDF0E8]">{prompt}</button>)}</div>
+      <div className="mt-4 flex flex-wrap gap-2">{["Tell me about this company", `I have a final interview with ${company.company}. What do Glassdoor reviews say?`, "What is my next step?", "Compare Northstar and Harbor offers"].map(prompt => <button key={prompt} onClick={() => ask(prompt)} className="rounded-full border border-black/10 px-3 py-2 text-xs hover:bg-[#EDF0E8]">{prompt}</button>)}</div>
       <div aria-live="polite" className="mt-5 space-y-4">{messages.map((message, index) => <div key={index} className={`rounded-xl p-4 ${message.role === "user" ? "bg-neutral-50" : "bg-[#EDF0E8]"}`}><p className="mb-2 text-xs font-medium text-[#65705E]">{message.role === "user" ? "You" : "Sample assistant"}</p><p className="whitespace-pre-wrap text-sm leading-relaxed">{message.text}</p></div>)}</div>
       <form onSubmit={event => { event.preventDefault(); ask(question); }} className="mt-5 flex gap-2"><input aria-label="Ask the sample assistant" value={question} onChange={event => setQuestion(event.target.value)} placeholder="Ask about the selected company…" className={inputStyle}/><button disabled={!question.trim()} className="rounded-xl bg-[#202522] px-4 py-2 text-sm text-white disabled:opacity-40">Ask</button></form>
     </div>

@@ -31,6 +31,8 @@ This dedicated deployment does not need Google credentials, an encryption key, o
 
 Replies are simulations and send no email. Changes are kept in the current browser view and reset on refresh. A visible sample-data banner identifies the prototype throughout.
 
+Interview cards and company details include editable notes. Saved notes persist in the current browser across refreshes, are not shared with other viewers, and remain when resetting sample tracker data. The Assistant tab is a scripted demonstration using fictional company profiles, tracker context, saved company notes, and editable hypothetical offers. It does not call a language model or browse the web. Offer comparison uses USD, shows base and target bonus separately, and excludes equity from cash totals.
+
 ## Validation
 
 Run `npm run test:demo`, `npm run lint`, and `npm run build`. The demo has also been checked in a browser for login, incorrect code rejection, date confirmations, edited replies, tasks, email simulations, source details, search, reset, mobile layout, sign-out, and isolation from Gmail and Supabase.

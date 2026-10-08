@@ -10,7 +10,15 @@ type View='Today'|'Applications'|'Interviews'|'Email updates'|'Me';
 type Modal={kind:'application'|'interview'|'email'|'reply';id:string}|null;
 function Stage({stage}:{stage:string}){return <span className={`rounded-full px-3 py-1 text-xs font-medium ${stage==='Rejected'?'bg-neutral-100 text-neutral-500':stage==='Applied'?'bg-[#F1F2EF] text-[#65705E]':'bg-[#E8EFE7] text-[#466344]'}`}>{stage}</span>;}
 export function DemoWorkspace({initial}:{initial:DemoData}) {
- const [data,setData]=useState(initial),[view,setView]=useState<View>('Today'),[query,setQuery]=useState(''),[stage,setStage]=useState('All'),[notice,setNotice]=useState(''),[modal,setModal]=useState<Modal>(null),[draft,setDraft]=useState('');
+ const [data,setData]=useState(initial),[view,setView]=useState<View>('Today'),[query,setQuery]=useState(''),[stage,setStage]=useState('All'),[notice,setNotice]=useState(''),[modal,setModalState]=useState<Modal>(null),[draft,setDraft]=useState('');
+ const [chatContext,setChatContext]=useState<string>();
+ function setModal(next:Modal) {
+  if(next) {
+   const id=next.kind==='application'?next.id:next.kind==='interview'?data.interviews.find(i=>i.id===next.id)?.applicationId:next.kind==='email'?data.emails.find(i=>i.id===next.id)?.applicationId:data.tasks.find(i=>i.id===next.id)?.applicationId;
+   setChatContext(id);
+  }
+  setModalState(next);
+ }
  const dialog=useRef<HTMLDialogElement>(null);
  useEffect(()=>{const element=dialog.current;if(modal&&element){element.showModal();return()=>element.close();}},[modal]);
  const pending=data.tasks.filter(t=>!t.completed),responses=pending.filter(t=>t.kind!=='todo');
@@ -51,6 +59,6 @@ export function DemoWorkspace({initial}:{initial:DemoData}) {
    {activeInterview&&<><p className="text-sm font-medium text-[#65705E]">{demoDate(activeInterview.at)} · {activeInterview.minutes} minutes</p><p className="mt-4 text-sm text-neutral-500">{activeInterview.interviewer}</p><p className="mt-2 text-sm text-neutral-400">Video call · {activeInterview.confirmed?'Time confirmed':'Confirmation requested'}</p><h3 className="mt-7 text-sm font-semibold">Prepare for this conversation</h3><DemoNotes key={activeInterview.id} storageId={`interview-${activeInterview.id}`} label="Prep & notes" initial={activeInterview.notes}/><DemoNotes key={activeInterview.applicationId} storageId={`company-${application(activeInterview.applicationId).company.toLowerCase().replace(/[^a-z0-9]/g,'')}`} label="Company notes"/><button onClick={()=>{const task=pending.find(t=>t.kind==='confirm'&&t.applicationId===activeInterview.applicationId);if(task)reply(task);else setModal({kind:'application',id:activeInterview.applicationId});}} className={`${button} mt-6`}>{activeInterview.confirmed?'Open application timeline':'Confirm interview date'}</button></>}
    {activeEmail&&<><p className="text-xs text-neutral-400">Sample email · {activeEmail.from} · {demoDate(activeEmail.receivedAt)}</p><p className="mt-5 whitespace-pre-wrap text-sm leading-relaxed text-neutral-600">{activeEmail.body}</p><div className="mt-6 rounded-xl bg-[#EDF0E8] p-4 text-sm text-[#65705E]">✓ {activeEmail.result}</div><button onClick={()=>setModal({kind:'application',id:activeEmail.applicationId})} className="mt-5 text-sm text-[#65705E] underline">Open linked application →</button></>}
   </dialog>}
- <DemoChatWidget data={data}/>
+ <DemoChatWidget data={data} contextId={chatContext}/>
  </main>;
 }

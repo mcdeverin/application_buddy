@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:email": "node tests/email-automation.test.mjs && node tests/email-automation.integration.mjs && node tests/gmail-request.test.mjs"
+    "test:email": "node tests/email-automation.test.mjs && node tests/email-automation.integration.mjs && node tests/gmail-request.test.mjs && node tests/email-facts.test.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",

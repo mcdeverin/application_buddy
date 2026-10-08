@@ -2,7 +2,7 @@ export const statuses = ["Saved", "Applied", "Screening", "Interview", "Final", 
 export type Application = {
   id: string; company: string; role: string; status: string;
   location: string | null; salary: string | null; job_url: string | null;
-  source: string | null; applied_at: string | null; last_update_at: string | null;
+  source: string | null; applied_at: string | null; last_update_at: string | null; email_status_at?: string | null;
 };
 export type Task = {
   id: string; application_id: string | null; title: string;

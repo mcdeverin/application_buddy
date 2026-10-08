@@ -10,6 +10,7 @@ create table actions(id uuid primary key default gen_random_uuid(),user_id uuid,
 alter table applications enable row level security; alter table application_events enable row level security; alter table actions enable row level security;
 create policy own on applications for all to authenticated using(auth.uid()=user_id) with check(auth.uid()=user_id); create policy own on application_events for all to authenticated using(auth.uid()=user_id) with check(auth.uid()=user_id); create policy own on actions for all to authenticated using(auth.uid()=user_id) with check(auth.uid()=user_id); grant select,insert,update,delete on applications,application_events,actions to authenticated;`);
 await db.exec(readFileSync(root+'supabase/migrations/20261008_email_reader.sql','utf8'));await db.exec(readFileSync(root+'supabase/migrations/20261008_email_automation.sql','utf8'));
+await db.exec(readFileSync(root+'supabase/migrations/20261008_email_identity_repair.sql','utf8'));
 await db.exec(`set role authenticated; set request.jwt.claim.sub='${user}'`);
 let count=0;
 const query=(sql,args=[])=>db.query(sql,args);
@@ -29,4 +30,11 @@ await query('update actions set completed=false');await query('select undo_email
 const historical=await insert('Historical interview',30);await apply(historical,'Interview',app,'Schedule interview');assert.equal((await query('select count(*)::int as n from actions')).rows[0].n,0);count++;
 await query("update applications set status='Withdrawn',last_update_at=clock_timestamp() where id=$1",[app]);const older=await insert('Old confirmation',5);assert.equal(await apply(older,'Applied',app),null);assert.equal(await status(app),'Withdrawn');count++;
 await db.exec(`set request.jwt.claim.sub='${other}'`);await assert.rejects(apply(older,'Applied',app));await assert.rejects(query('select undo_email_update($1)',[historical]));count++;
+await db.exec(`set request.jwt.claim.sub='${user}'`);
+const repairImport=await insert('Confirmation repair',0);const repairApp=await apply(repairImport,'Applied');
+assert.equal((await query("select repair_email_application($1,'Acme Corporation','Product Operations Manager','Applied') as ok",[repairImport])).rows[0].ok,true);assert.equal((await query('select role from applications where id=$1',[repairApp])).rows[0].role,'Product Operations Manager');count++;
+assert.equal((await query("select repair_email_application($1,'Wrong','Wrong Manager','Rejected') as ok",[repairImport])).rows[0].ok,false);count++;
+const protectedImport=await insert('Protected repair',0);const protectedApp=await apply(protectedImport,'Interview');await query("update applications set role='Manually edited Manager',last_update_at=clock_timestamp() where id=$1",[protectedApp]);
+assert.equal((await query("select repair_email_application($1,'Other Company','Wrong Manager','Rejected') as ok",[protectedImport])).rows[0].ok,false);assert.equal((await query('select role from applications where id=$1',[protectedApp])).rows[0].role,'Manually edited Manager');count++;
+await db.exec(`set request.jwt.claim.sub='${other}'`);await assert.rejects(query("select repair_email_application($1,'Other Company','Wrong Manager','Rejected')",[protectedImport]));count++;
 console.log(`${count} PostgreSQL integration checks passed (RLS, chronological sync, idempotence, manual edits, tasks and Undo).`);await db.close();

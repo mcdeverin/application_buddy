@@ -74,7 +74,7 @@ export async function syncEmails(requestedFrom?: string, pendingOnly = false): P
         inheritedThread = !!evidence;
       }
       if (!evidence) { skipped++; continue; }
-      const suggestion = suggestEmail(subject, body);
+      const suggestion = suggestEmail(subject, body, header("from"));
       if (evidence.kind === "confirmation") suggestion.status = "Applied";
       if (evidence.kind === "interview" && !["Rejected", "Offer", "Final"].includes(suggestion.status)) suggestion.status = "Interview";
       const { error: insertError } = await auth.supabase.from("email_imports").upsert({
@@ -170,4 +170,17 @@ export async function undoEmail(_previous: MutationState, form: FormData): Promi
   if (error) return { error: "Cannot undo while newer changes exist. Undo the newer email updates first, or edit the application directly. Completed interview tasks also protect their update." };
   revalidatePath("/"); revalidatePath("/email");
   return { message: "Update undone. Newly created applications remain as Saved.", saved: Date.now() };
+}
+
+
+export async function reprocessStoredEmails(): Promise<MutationState & { hasMore?: boolean }> {
+  const auth=await authenticate();
+  if(!auth) return {error:"Sign in again."};
+  const {error}=await auth.supabase.from("email_imports").update({identity_revision:1,automation_checked:false}).eq("user_id",auth.userId).eq("review_status","pending").lt("identity_revision",1);
+  if(error) return {error:"Run the email identity repair migration to reprocess stored updates."};
+  try {
+    const result=await processPending(auth);
+    if(result.applied) {revalidatePath("/");revalidatePath("/email");}
+    return {saved:result.applied,hasMore:result.more};
+  } catch { return {error:"Some stored updates could not be matched. Refresh to retry; your records are safe."}; }
 }

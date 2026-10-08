@@ -2,6 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "../../utils/supabase/server";
+import { reprocessStoredEmails } from "./email/actions";
+import { extractEmailIdentity, emailStage } from "@/lib/email-facts";
 import { statuses, safeJobUrl, validUuid, parseDate } from "@/lib/tracker";
 
 export type MutationState = { error?: string; message?: string; saved?: number };
@@ -104,4 +106,23 @@ export async function addEvent(_previous: MutationState, form: FormData): Promis
   if (error) return { error: "Could not save this entry. Please try again." };
   revalidatePath("/");
   return { message: eventType === "Interview" ? "Interview added." : "Note added.", saved: Date.now() };
+}
+
+
+export async function repairImportedApplications(): Promise<MutationState & { hasMore?: boolean }> {
+  const auth = await authenticatedClient();
+  if (!auth) return { error: "Sign in again." };
+  const { data: imports, error } = await auth.supabase.from("email_imports").select("id, subject, excerpt, sender").eq("user_id",auth.userId).eq("review_status","applied").eq("auto_applied",true).eq("repair_checked",false).order("applied_version",{ascending:false}).limit(101);
+  if (error) return { error: "Run the email identity repair migration to clean existing imports." };
+  let repaired=0;
+  for (const item of (imports??[]).slice(0,100)) {
+    const identity=extractEmailIdentity(item.subject,item.excerpt,item.sender);
+    const {data,error:repairError}=await auth.supabase.rpc("repair_email_application",{import_id:item.id,company_name:identity.company||null,role_name:identity.role||null,corrected_status:emailStage(item.subject,item.excerpt,item.sender)});
+    if(repairError) return {error:"Some imported details could not be repaired. Your records are safe; refresh to retry."};
+    if(data) repaired++;
+  }
+  if(repaired) { revalidatePath("/"); revalidatePath("/email"); }
+  const stored=await reprocessStoredEmails();
+  if(stored.error) return stored;
+  return {hasMore:(imports?.length??0)>100||stored.hasMore,saved:repaired+(stored.saved??0)};
 }

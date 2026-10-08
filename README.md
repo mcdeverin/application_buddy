@@ -82,3 +82,10 @@ Recent updates link to Gmail and provide Undo. Undo restores the previous applic
 Run `npm run test:email` for matching regression tests and PostgreSQL integration checks (including RLS, chronology, duplicate imports, tasks and Undo).
 
 Gmail sync refreshes a rejected access token once, retries temporary failures with bounded backoff, skips messages removed since listing, and restarts a rejected saved cursor without changing the selected date. Already imported emails remain deduplicated. Persistent failures show the operation and a sanitized HTTP error code; tokens, email bodies and raw Google error messages are never included in the displayed error.
+
+
+## Stored email identity repair
+
+After applying the cleanup patch, run `supabase/migrations/20261008_email_identity_repair.sql`. Opening the dashboard automatically checks existing automatic imports using their stored subject, sender and excerpt, with no Gmail requests. Repairs apply only to the latest automatic update when the application has not been manually changed. Original company, role and status are retained in `email_imports.repair_data`. Manually accepted imports are not repaired automatically. Previously pending clarification emails get one matching pass with the improved parser, using stored content only. Details that cannot be confidently extracted are shown as unidentified rather than sentence fragments; their stored source excerpts remain intact.
+
+The parser decodes HTML entities, trims receipt boilerplate, rejects generic role/company phrases and keeps confirmation emails at Applied unless there is an actual hiring decision or interview action. The dashboard uses the latest email date for imported applications and includes pending clarification items in Needs you. Upcoming interviews appear before Recent applications. The Interviews tab also shows past interview conversations, with email receipt dates clearly distinguished from scheduled interview times.

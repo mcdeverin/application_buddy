@@ -4,8 +4,17 @@ import { useActionState, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { statuses, safeJobUrl, type Application, type Task, type ApplicationEvent } from "@/lib/tracker";
-import { saveApplication, saveTask, toggleTask, addEvent, type MutationState } from "./tracker-actions";
+import { cleanCompany, cleanRole, validCompany, validRole } from "@/lib/email-facts";
+import { classifyApplicationEmail } from "@/lib/email-filter";
+import { repairImportedApplications, saveApplication, saveTask, toggleTask, addEvent, type MutationState } from "./tracker-actions";
 
+function companyLabel(a: Application) { return a.source === "Gmail" ? validCompany(a.company) ? cleanCompany(a.company) : "Company not identified" : a.company; }
+function roleLabel(a: Application) { return a.source === "Gmail" ? validRole(a.role) ? cleanRole(a.role) : "Role not identified" : a.role; }
+function interviewConversation(e: ApplicationEvent) {
+  if(e.source!=="Gmail") return e.event_type.toLowerCase()==="interview";
+  const [subject,...body]=(e.description??"").split("\n");
+  return classifyApplicationEmail(subject,body.join("\n"),"")?.kind==="interview";
+}
 const inputClass = "w-full rounded-xl border border-black/15 bg-white px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-black/20";
 const buttonClass = "rounded-xl bg-black px-4 py-2.5 text-sm font-medium text-white disabled:opacity-50";
 const panelClass = "rounded-2xl border border-black/[0.07] bg-white p-5 sm:p-6";
@@ -89,7 +98,7 @@ function EventForm({ applicationId }: { applicationId: string }) {
 function ApplicationCard({ application, events }: { application: Application; events: ApplicationEvent[] }) {
   const url = safeJobUrl(application.job_url ?? "");
   return <details className={panelClass}>
-    <summary className="cursor-pointer list-none"><div className="flex items-start justify-between gap-4"><div><p className="text-sm text-neutral-500">{application.company}</p><h3 className="mt-1 font-semibold">{application.role}</h3><p className="mt-2 text-xs text-neutral-500">{application.location ?? "Location not specified"}{application.salary ? ` · ${application.salary}` : ""}</p></div><span className="shrink-0 rounded-full bg-[#F2F2EF] px-3 py-1 text-xs">{application.status}</span></div><div className="mt-4 flex justify-between text-xs text-neutral-400"><span>Updated {formatDate(application.last_update_at)}</span><span>Details & notes ↓</span></div></summary>
+    <summary className="cursor-pointer list-none"><div className="flex items-start justify-between gap-4"><div><p className="text-sm text-neutral-500">{companyLabel(application)}</p><h3 className="mt-1 font-semibold">{roleLabel(application)}</h3><p className="mt-2 text-xs text-neutral-500">{application.location ?? "Location not specified"}{application.salary ? ` · ${application.salary}` : ""}</p></div><span className="shrink-0 rounded-full bg-[#F2F2EF] px-3 py-1 text-xs">{application.status}</span></div><div className="mt-4 flex justify-between text-xs text-neutral-400"><span>{application.email_status_at ? "Latest email" : "Updated"} {formatDate(application.email_status_at ?? application.last_update_at)}</span><span>Details & notes ↓</span></div></summary>
     <div className="mt-6 space-y-7 border-t border-black/5 pt-6">
       {url && <a href={url} target="_blank" rel="noopener noreferrer" className="text-sm underline underline-offset-4">Open job posting ↗</a>}
       <ApplicationForm application={application} />
@@ -99,8 +108,25 @@ function ApplicationCard({ application, events }: { application: Application; ev
   </details>;
 }
 
-export function Tracker({ email, applications, tasks, events, loadError, now }: { email: string; applications: Application[]; tasks: Task[]; events: ApplicationEvent[]; loadError: boolean; now: string }) {
+export function Tracker({ email, applications: storedApplications, tasks, events, loadError, now, clarificationCount }: { email: string; applications: Application[]; tasks: Task[]; events: ApplicationEvent[]; loadError: boolean; now: string; clarificationCount: number }) {
+  const applications=[...storedApplications].sort((a,b)=>new Date(b.email_status_at??b.last_update_at??0).getTime()-new Date(a.email_status_at??a.last_update_at??0).getTime());
   const router = useRouter();
+  const repairedOnce = useRef(false);
+  const [repairError, setRepairError] = useState("");
+  useEffect(() => {
+    if(repairedOnce.current) return;
+    repairedOnce.current=true;
+    void (async()=>{
+      let changed=false;
+      while(true) {
+        const result=await repairImportedApplications();
+        if(result.error) { setRepairError(result.error); break; }
+        changed ||= !!result.saved;
+        if(!result.hasMore) break;
+      }
+      if(changed) router.refresh();
+    })().catch(()=>setRepairError("Imported details could not be refreshed. Refresh to retry."));
+  },[router]);
   const [view, setView] = useState("Today");
   const [adding, setAdding] = useState(false);
   const [query, setQuery] = useState("");
@@ -108,9 +134,11 @@ export function Tracker({ email, applications, tasks, events, loadError, now }: 
   const [showCompleted, setShowCompleted] = useState(false);
   const current = new Date(now);
   const pending = tasks.filter(t => !t.completed);
-  const interviews = events.filter(e => e.event_type.toLowerCase() === "interview" && e.occurred_at && new Date(e.occurred_at) >= current && applications.some(a => a.id === e.application_id && !["Rejected", "Withdrawn"].includes(a.status))).sort((a, b) => (a.occurred_at ?? "").localeCompare(b.occurred_at ?? ""));
+  const interviews = events.filter(e => e.source !== "Gmail" && e.event_type.toLowerCase() === "interview" && e.occurred_at && new Date(e.occurred_at) >= current && applications.some(a => a.id === e.application_id && !["Rejected", "Withdrawn"].includes(a.status))).sort((a, b) => (a.occurred_at ?? "").localeCompare(b.occurred_at ?? ""));
+  const conversations = events.filter(interviewConversation).filter(e => applications.some(a=>a.id===e.application_id));
   const shown = applications.filter(a => (stage === "All" || a.status === stage) && `${a.company} ${a.role} ${a.location ?? ""}`.toLowerCase().includes(query.toLowerCase()));
   const active = applications.filter(a => !["Rejected", "Withdrawn", "Saved"].includes(a.status)).length;
+  const upcomingSection = (<section className="mb-8"><h2 className="mb-4 font-semibold">Upcoming interviews</h2><div className="space-y-4">{interviews.map(e => { const a = applications.find(a => a.id === e.application_id)!; return <article key={e.id} className={panelClass}><p className="text-xs text-neutral-500">{formatDate(e.occurred_at, true)}</p><h3 className="mt-2 font-semibold">{companyLabel(a)} · {roleLabel(a)}</h3><p className="mt-3 whitespace-pre-wrap break-words text-sm text-neutral-600">{e.description}</p><button onClick={() => { setQuery(a.company); setStage("All"); setView("Applications"); }} className="mt-4 text-sm underline underline-offset-4">Open application & notes →</button></article>; })}</div>{!interviews.length && <Empty text="No interviews scheduled." detail="Open an application and add an Interview entry with its date, time, and preparation notes." />}</section>);
   return <main className="min-h-screen bg-[#F8F8F6] text-[#171717]">
     <aside className="border-b border-black/5 bg-white px-5 py-5 md:fixed md:inset-y-0 md:left-0 md:flex md:w-60 md:flex-col md:border-r md:px-6 md:py-8">
       <p className="mb-6 text-lg font-semibold tracking-tight">✦ Application Buddy</p>
@@ -119,16 +147,19 @@ export function Tracker({ email, applications, tasks, events, loadError, now }: 
     </aside>
     <div className="md:ml-60"><div className="mx-auto max-w-5xl px-5 py-8 sm:px-10 md:py-12">
       <header className="mb-8 flex flex-wrap items-end justify-between gap-4"><div><p className="mb-2 text-sm text-neutral-400">{current.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</p><h1 className="text-3xl font-semibold tracking-tight">{view === "Today" ? "Your search, at a glance." : view === "Me" ? "Your workspace" : view}</h1><p className="mt-3 text-neutral-500">{view === "Today" ? "A little progress, every day." : view === "Applications" ? "Every opportunity and its next step." : view === "Interviews" ? "Upcoming conversations and your notes." : "Your account and connected tools."}</p></div>{view !== "Me" && <button onClick={() => setAdding(!adding)} className={buttonClass}>{adding ? "Close form" : "+ Add application"}</button>}</header>
+      {repairError && <p role="alert" className="mb-5 text-sm text-amber-800">{repairError}</p>}
       {loadError && <div role="alert" className="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">Some records could not be loaded. Check your connection and table access, then <button onClick={() => router.refresh()} className="underline">retry</button>.</div>}
       {adding && <section className={`${panelClass} mb-8`}><h2 className="mb-5 font-semibold">Add an application</h2><ApplicationForm onSaved={() => setAdding(false)} /></section>}
       {view === "Today" && <>
-        <div className="mb-8 grid grid-cols-3 gap-3">{[["Applications", applications.length], ["Active", active], ["Needs you", pending.length]].map(([label, count]) => <div key={label} className={panelClass}><p className="text-xs text-neutral-500">{label}</p><p className="mt-2 text-2xl font-semibold">{count}</p></div>)}</div>
-        <section className={`${panelClass} mb-8`}><h2 className="mb-2 font-semibold">Needs you</h2>{pending.length ? pending.map(t => <TaskRow key={t.id} task={t} application={applications.find(a => a.id === t.application_id)} />) : <p className="py-4 text-sm text-neutral-400">You’re all caught up. Add a task below to plan your next step.</p>}<details className="mt-4 border-t border-black/5 pt-4"><summary className="cursor-pointer text-sm font-medium">+ Add a task</summary><div className="mt-4"><TaskForm applications={applications} /></div></details><button onClick={() => setShowCompleted(!showCompleted)} className="mt-5 text-xs text-neutral-500 underline">{showCompleted ? "Hide" : "Show"} completed tasks</button>{showCompleted && tasks.filter(t => t.completed).map(t => <TaskRow key={t.id} task={t} application={applications.find(a => a.id === t.application_id)} />)}</section>
+        <div className="mb-8 grid grid-cols-3 gap-3">{[["Applications", applications.length], ["Active", active], ["Needs you", pending.length + clarificationCount]].map(([label, count]) => <div key={label} className={panelClass}><p className="text-xs text-neutral-500">{label}</p><p className="mt-2 text-2xl font-semibold">{count}</p></div>)}</div>
+        <section className={`${panelClass} mb-8`}><h2 className="mb-2 font-semibold">Needs you</h2>{pending.length ? pending.map(t => <TaskRow key={t.id} task={t} application={applications.find(a => a.id === t.application_id)} />) : <p className="py-4 text-sm text-neutral-400">No open tasks.</p>}{clarificationCount>0 && <Link href="/email" className="mt-3 block text-sm underline">{clarificationCount} application updates need clarification →</Link>}<details className="mt-4 border-t border-black/5 pt-4"><summary className="cursor-pointer text-sm font-medium">+ Add a task</summary><div className="mt-4"><TaskForm applications={applications} /></div></details><button onClick={() => setShowCompleted(!showCompleted)} className="mt-5 text-xs text-neutral-500 underline">{showCompleted ? "Hide" : "Show"} completed tasks</button>{showCompleted && tasks.filter(t => t.completed).map(t => <TaskRow key={t.id} task={t} application={applications.find(a => a.id === t.application_id)} />)}</section>
+        {upcomingSection}
         <section className="mb-8"><div className="mb-4 flex justify-between"><h2 className="font-semibold">Recent applications</h2><button onClick={() => setView("Applications")} className="text-sm text-neutral-500">View all →</button></div><div className="space-y-4">{applications.slice(0, 4).map(a => <ApplicationCard key={a.id} application={a} events={events.filter(e => e.application_id === a.id)} />)}</div>{!applications.length && <Empty text="Your first application starts here." detail="Add a company and role above. Your updates will be saved to your account." />}</section>
       </>}
       {view === "Applications" && <><div className="mb-6 flex flex-col gap-3 sm:flex-row"><input aria-label="Search applications" placeholder="Search company, role, or location…" value={query} onChange={e => setQuery(e.target.value)} className={inputClass} /><select aria-label="Filter by stage" value={stage} onChange={e => setStage(e.target.value)} className={`${inputClass} sm:max-w-48`}><option value="All">All stages</option>{Array.from(new Set([...statuses, ...applications.map(a => a.status)])).map(s => <option key={s}>{s}</option>)}</select></div><div className="space-y-4">{shown.map(a => <ApplicationCard key={a.id} application={a} events={events.filter(e => e.application_id === a.id)} />)}</div>{!shown.length && <Empty text={applications.length ? "No applications match these filters." : "No applications yet."} detail={applications.length ? "Try another search or stage." : "Add your first opportunity to start tracking."} />}</>}
-      {(view === "Today" || view === "Interviews") && <section><h2 className="mb-4 font-semibold">Upcoming interviews</h2><div className="space-y-4">{interviews.map(e => { const a = applications.find(a => a.id === e.application_id)!; return <article key={e.id} className={panelClass}><p className="text-xs text-neutral-500">{formatDate(e.occurred_at, true)}</p><h3 className="mt-2 font-semibold">{a.company} · {a.role}</h3><p className="mt-3 whitespace-pre-wrap break-words text-sm text-neutral-600">{e.description}</p><button onClick={() => { setQuery(a.company); setStage("All"); setView("Applications"); }} className="mt-4 text-sm underline underline-offset-4">Open application & notes →</button></article>; })}</div>{!interviews.length && <Empty text="No interviews scheduled." detail="Open an application and add an Interview entry with its date, time, and preparation notes." />}</section>}
-      {view === "Me" && <div className="space-y-5"><section className={panelClass}><h2 className="font-semibold">Account</h2><p className="mt-3 text-sm text-neutral-500">{email}</p></section><section className={panelClass}><h2 className="font-semibold">Email connection</h2><p className="mt-3 text-sm text-neutral-500">Connect Gmail and review application updates from new emails.</p><Link href="/email" className="mt-4 inline-block text-sm underline">Open email reader →</Link></section><section className={panelClass}><h2 className="font-semibold">Resume & matching</h2><p className="mt-3 text-sm text-neutral-500">Resume uploads and personalized job matches are coming next.</p></section></div>}
+      {view === "Interviews" && upcomingSection}
+      {view === "Interviews" && <section className="mt-8"><h2 className="mb-4 font-semibold">Interview conversations & history</h2><div className="space-y-4">{conversations.map(e=>{const a=applications.find(a=>a.id===e.application_id)!;return <article key={e.id} className={panelClass}><p className="text-xs text-neutral-500">{e.source==="Gmail"?"Email received":"Interview"} · {formatDate(e.occurred_at,true)}</p><h3 className="mt-2 font-semibold">{companyLabel(a)} · {roleLabel(a)}</h3><p className="mt-3 whitespace-pre-wrap break-words text-sm text-neutral-600">{e.description}</p><button onClick={()=>{setQuery(a.company);setStage("All");setView("Applications");}} className="mt-4 text-sm underline">Open application & notes →</button></article>;})}</div>{!conversations.length && <Empty text="No interview conversations yet." detail="Interview emails will appear here, including past conversations." />}</section>}
+      {view === "Me" && <div className="space-y-5"><section className={panelClass}><h2 className="font-semibold">Account</h2><p className="mt-3 text-sm text-neutral-500">{email}</p></section><section className={panelClass}><h2 className="font-semibold">Email connection</h2><p className="mt-3 text-sm text-neutral-500">Gmail keeps your applications up to date automatically.</p><Link href="/email" className="mt-4 inline-block text-sm underline">Open email reader →</Link></section><section className={panelClass}><h2 className="font-semibold">Resume & matching</h2><p className="mt-3 text-sm text-neutral-500">Resume uploads and personalized job matches are coming next.</p></section></div>}
     </div></div>
   </main>;
 }

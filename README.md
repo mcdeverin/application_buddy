@@ -54,7 +54,7 @@ node -e 'process.stdout.write(require("crypto").randomBytes(32).toString("base64
 ```
 
 6. Restart `npm run dev`, sign in, and open Email reader → Connect Gmail. Approve Google's read-only consent yourself, then Sync new emails.
-7. Review suggested company/role/stage and confirm or ignore each message. Imports begin at connection time, without backfilling older history. Sync reads at most 30 matching messages per batch; repeated syncs continue pagination, and unique IDs prevent duplicate imports.
+7. Review suggested company/role/stage and confirm or ignore each message. Imports start at connection time by default. Use Sync emails from to choose an earlier date, or One month ago for a quick history import. Changing the date restarts pagination for that range; the chosen range persists across reloads. Sync reads at most 30 matching messages per batch; repeated syncs continue pagination, and unique IDs prevent duplicate imports.
 
 Testing-mode Google refresh tokens may expire after seven days; reconnect when needed. Public distribution of Gmail read access requires Google's verification process. This first version is for your own test account.
 

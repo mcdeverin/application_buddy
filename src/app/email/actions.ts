@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "../../../utils/supabase/server";
 import { decrypt, encrypt, exchangeTokens, gmailGet } from "@/lib/gmail";
 import { suggestEmail, emailText, type GmailPart } from "@/lib/email-parser";
+import { readSyncWindow, writeSyncWindow, resolveSyncWindow } from "@/lib/sync-window";
 import { statuses, validUuid } from "@/lib/tracker";
 import type { MutationState } from "../tracker-actions";
 
@@ -13,12 +14,13 @@ async function authenticate() {
   return data.user ? { supabase, userId: data.user.id } : null;
 }
 
-export async function syncEmails(): Promise<MutationState> {
+export async function syncEmails(requestedFrom?: string): Promise<MutationState> {
   const auth = await authenticate();
   if (!auth) return { error: "Sign in again to sync Gmail." };
   try {
     const { data: connection, error } = await auth.supabase.from("email_connections").select("*").eq("user_id", auth.userId).maybeSingle();
     if (error || !connection) return { error: "Connect Gmail first. If setup is incomplete, run the email migration." };
+    const window = resolveSyncWindow(readSyncWindow(connection.page_token, connection.connected_at), requestedFrom);
     let accessToken = decrypt(connection.access_token_encrypted);
     if (new Date(connection.expires_at).getTime() < Date.now() + 60000) {
       const tokens = await exchangeTokens({ grant_type: "refresh_token", refresh_token: decrypt(connection.refresh_token_encrypted) });
@@ -26,9 +28,9 @@ export async function syncEmails(): Promise<MutationState> {
       const { error: tokenError } = await auth.supabase.from("email_connections").update({ access_token_encrypted: encrypt(accessToken), expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString() }).eq("user_id", auth.userId).eq("email", connection.email).eq("connected_at", connection.connected_at);
       if (tokenError) throw new Error("Could not refresh your Gmail connection.");
     }
-    const after = Math.floor(new Date(connection.connected_at).getTime() / 1000);
+    const after = Math.floor(new Date(window.from).getTime() / 1000);
     const params = new URLSearchParams({ maxResults: "30", q: `after:${after} -in:spam -in:trash {application applied interview recruiting recruiter candidacy candidate employment \"job offer\" \"thank you for applying\"}` });
-    if (connection.page_token) params.set("pageToken", connection.page_token);
+    if (window.next) params.set("pageToken", window.next);
     const page = await gmailGet<{ messages?: { id: string }[]; nextPageToken?: string }>(`messages?${params}`, accessToken);
     let imported = 0;
     for (const message of page.messages ?? []) {
@@ -36,7 +38,7 @@ export async function syncEmails(): Promise<MutationState> {
       if (lookupError) throw new Error("Could not check previously imported emails.");
       if (existing) continue;
       const full = await gmailGet<{ payload: GmailPart; snippet?: string; internalDate: string }>(`messages/${encodeURIComponent(message.id)}?format=full`, accessToken);
-      if (Number(full.internalDate) < new Date(connection.connected_at).getTime()) continue;
+      if (Number(full.internalDate) < new Date(window.from).getTime()) continue;
       const header = (name: string) => full.payload.headers?.find(h => h.name.toLowerCase() === name)?.value ?? "";
       const subject = header("subject").slice(0, 1000);
       const body = emailText(full.payload) || full.snippet || "";
@@ -51,7 +53,7 @@ export async function syncEmails(): Promise<MutationState> {
       if (insertError) throw new Error("Could not save the review queue. Try syncing again.");
       imported++;
     }
-    const { error: saveError } = await auth.supabase.from("email_connections").update({ page_token: page.nextPageToken ?? null, last_synced_at: new Date().toISOString() }).eq("user_id", auth.userId).eq("email", connection.email).eq("connected_at", connection.connected_at);
+    const { error: saveError } = await auth.supabase.from("email_connections").update({ page_token: writeSyncWindow({ from: window.from, next: page.nextPageToken ?? null }), last_synced_at: new Date().toISOString() }).eq("user_id", auth.userId).eq("email", connection.email).eq("connected_at", connection.connected_at);
     if (saveError) throw new Error("Could not save sync progress. Imported emails are safe; try again.");
     revalidatePath("/email");
     return { message: `${imported} email${imported === 1 ? "" : "s"} added for review.${page.nextPageToken ? " Sync again to read the next batch." : ""}`, saved: Date.now() };

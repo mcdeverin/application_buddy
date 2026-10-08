@@ -80,3 +80,5 @@ Clear company/role matches or a previously linked Gmail thread update the applic
 Recent updates link to Gmail and provide Undo. Undo restores the previous application state and removes its generated timeline entry and unchanged task; later application changes or completed tasks block Undo to avoid overwriting user work. An application created by an undone import stays as Saved. Historical interview scheduling requests older than seven days do not create tasks. Existing ignored emails stay ignored.
 
 Run `npm run test:email` for matching regression tests and PostgreSQL integration checks (including RLS, chronology, duplicate imports, tasks and Undo).
+
+Gmail sync refreshes a rejected access token once, retries temporary failures with bounded backoff, skips messages removed since listing, and restarts a rejected saved cursor without changing the selected date. Already imported emails remain deduplicated. Persistent failures show the operation and a sanitized HTTP error code; tokens, email bodies and raw Google error messages are never included in the displayed error.

@@ -1,4 +1,5 @@
 import "server-only";
+import { readGmail } from "./gmail-request";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
 export const gmailScope = "https://www.googleapis.com/auth/gmail.readonly";
@@ -35,9 +36,5 @@ export async function exchangeTokens(values: Record<string, string>): Promise<Go
   return result;
 }
 export async function gmailGet<T>(path: string, token: string): Promise<T> {
-  const response = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, {
-    headers: { Authorization: `Bearer ${token}` }, cache: "no-store", signal: AbortSignal.timeout(15000),
-  });
-  if (!response.ok) throw new Error("Gmail could not be read. Try again, or reconnect your account.");
-  return response.json();
+  return readGmail<T>(path, token);
 }

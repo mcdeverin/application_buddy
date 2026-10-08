@@ -6,6 +6,7 @@ import { decrypt, encrypt, exchangeTokens, gmailGet } from "@/lib/gmail";
 import { suggestEmail, emailText, type GmailPart } from "@/lib/email-parser";
 import { readSyncWindow, writeSyncWindow, resolveSyncWindow } from "@/lib/sync-window";
 import { applicationEmailQuery, classifyApplicationEmail } from "@/lib/email-filter";
+import { GmailError, readGmailPage, readOptionalGmail, readWithRefresh } from "@/lib/gmail-request";
 import { emailDecision } from "@/lib/email-automation";
 import { statuses, validUuid } from "@/lib/tracker";
 import type { MutationState } from "../tracker-actions";
@@ -29,23 +30,33 @@ export async function syncEmails(requestedFrom?: string, pendingOnly = false): P
     if (error || !connection) return { error: "Connect Gmail first. If setup is incomplete, run the email migration." };
     const window = resolveSyncWindow(readSyncWindow(connection.page_token, connection.connected_at), requestedFrom);
     let accessToken = decrypt(connection.access_token_encrypted);
-    if (new Date(connection.expires_at).getTime() < Date.now() + 60000) {
+    let refreshed = false;
+    const refreshAccess = async () => {
+      if (refreshed) throw new GmailError(401, "authError", "read emails");
       const tokens = await exchangeTokens({ grant_type: "refresh_token", refresh_token: decrypt(connection.refresh_token_encrypted) });
       accessToken = tokens.access_token;
       const { error: tokenError } = await auth.supabase.from("email_connections").update({ access_token_encrypted: encrypt(accessToken), expires_at: new Date(Date.now() + tokens.expires_in * 1000).toISOString() }).eq("user_id", auth.userId).eq("email", connection.email).eq("connected_at", connection.connected_at);
       if (tokenError) throw new Error("Could not refresh your Gmail connection.");
-    }
+      refreshed = true;
+    };
+    if (new Date(connection.expires_at).getTime() < Date.now() + 60000) await refreshAccess();
+    const request = <T,>(path: string) => readWithRefresh(() => gmailGet<T>(path, accessToken), refreshAccess);
     const after = Math.floor(new Date(window.from).getTime() / 1000);
     const params = new URLSearchParams({ maxResults: "30", q: `after:${after} -in:spam -in:trash -in:sent ${applicationEmailQuery}` });
     if (window.next) params.set("pageToken", window.next);
-    const page = await gmailGet<{ messages?: { id: string }[]; nextPageToken?: string }>(`messages?${params}`, accessToken);
+    const page = await readGmailPage(params, path => request<{ messages?: { id: string }[]; nextPageToken?: string }>(path), async () => {
+      window.next = null;
+      const { error: resetError } = await auth.supabase.from("email_connections").update({ page_token: writeSyncWindow(window) }).eq("user_id", auth.userId).eq("email", connection.email).eq("connected_at", connection.connected_at);
+      if (resetError) throw new Error("Could not recover sync progress. Try syncing again.");
+    });
     let imported = 0;
     let skipped = 0;
     for (const message of page.messages ?? []) {
       const { data: existing, error: lookupError } = await auth.supabase.from("email_imports").select("id").eq("user_id", auth.userId).eq("mailbox_email", connection.email).eq("gmail_message_id", message.id).maybeSingle();
       if (lookupError) throw new Error("Could not check previously imported emails.");
       if (existing) continue;
-      const full = await gmailGet<{ payload: GmailPart; snippet?: string; internalDate: string; threadId?: string }>(`messages/${encodeURIComponent(message.id)}?format=full`, accessToken);
+      const full = await readOptionalGmail(() => request<{ payload: GmailPart; snippet?: string; internalDate: string; threadId?: string }>(`messages/${encodeURIComponent(message.id)}?format=full`));
+      if (!full) { skipped++; continue; }
       if (Number(full.internalDate) < new Date(window.from).getTime()) continue;
       const header = (name: string) => full.payload.headers?.find(h => h.name.toLowerCase() === name)?.value ?? "";
       const subject = header("subject").slice(0, 1000);
@@ -54,8 +65,8 @@ export async function syncEmails(requestedFrom?: string, pendingOnly = false): P
       let inheritedThread = false;
       // A short reply inherits evidence only from another message in this exact Gmail thread.
       if (!evidence && /^(re:)/i.test(subject) && full.threadId) {
-        const thread = await gmailGet<{ messages?: { payload: GmailPart }[] }>(`threads/${encodeURIComponent(full.threadId)}?format=full`, accessToken);
-        evidence = [...(thread.messages ?? [])].reverse().map(message => {
+        const thread = await readOptionalGmail(() => request<{ messages?: { payload: GmailPart }[] }>(`threads/${encodeURIComponent(full.threadId!)}?format=full`));
+        evidence = [...(thread?.messages ?? [])].reverse().map(message => {
           const headers = message.payload.headers ?? [];
           const value = (name: string) => headers.find(h => h.name.toLowerCase() === name)?.value ?? "";
           return classifyApplicationEmail(value("subject"), emailText(message.payload), value("from"));

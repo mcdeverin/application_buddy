@@ -2,6 +2,15 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 export async function proxy(request: NextRequest) {
+  const path=request.nextUrl.pathname;
+  const demoPath=path==="/demo"||path.startsWith("/demo/");
+  if(process.env.DEMO_ONLY==="true"&&!demoPath) return NextResponse.redirect(new URL("/demo",request.url));
+  if(demoPath) {
+    const demoResponse=NextResponse.next({request});
+    demoResponse.headers.set("Cache-Control","private, no-store");
+    demoResponse.headers.set("X-Robots-Tag","noindex, nofollow");
+    return demoResponse;
+  }
   let response = NextResponse.next({ request });
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;

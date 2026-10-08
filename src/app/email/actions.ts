@@ -6,6 +6,7 @@ import { decrypt, encrypt, exchangeTokens, gmailGet } from "@/lib/gmail";
 import { suggestEmail, emailText, type GmailPart } from "@/lib/email-parser";
 import { readSyncWindow, writeSyncWindow, resolveSyncWindow } from "@/lib/sync-window";
 import { applicationEmailQuery, classifyApplicationEmail } from "@/lib/email-filter";
+import { emailDecision } from "@/lib/email-automation";
 import { statuses, validUuid } from "@/lib/tracker";
 import type { MutationState } from "../tracker-actions";
 
@@ -15,10 +16,15 @@ async function authenticate() {
   return data.user ? { supabase, userId: data.user.id } : null;
 }
 
-export async function syncEmails(requestedFrom?: string): Promise<MutationState> {
+export async function syncEmails(requestedFrom?: string, pendingOnly = false): Promise<MutationState & { hasMore?: boolean; pendingOnly?: boolean; applied?: number; clarifications?: number }> {
   const auth = await authenticate();
   if (!auth) return { error: "Sign in again to sync Gmail." };
   try {
+    if (pendingOnly) {
+      const automatic = await processPending(auth);
+      revalidatePath("/"); revalidatePath("/email");
+      return { applied: automatic.applied, clarifications: automatic.clarifications, hasMore: automatic.more, pendingOnly: true, message: `${automatic.applied} automatic updates; ${automatic.clarifications} need clarification.` };
+    }
     const { data: connection, error } = await auth.supabase.from("email_connections").select("*").eq("user_id", auth.userId).maybeSingle();
     if (error || !connection) return { error: "Connect Gmail first. If setup is incomplete, run the email migration." };
     const window = resolveSyncWindow(readSyncWindow(connection.page_token, connection.connected_at), requestedFrom);
@@ -65,15 +71,16 @@ export async function syncEmails(requestedFrom?: string): Promise<MutationState>
         subject, sender: header("from").slice(0, 1000), excerpt: body.slice(0, 4000),
         received_at: new Date(Number(full.internalDate)).toISOString(),
         suggested_company: suggestion.company, suggested_role: suggestion.role,
-        suggested_status: suggestion.status, reason: inheritedThread ? `Verified application thread: ${evidence.reason}` : evidence.reason,
+        gmail_thread_id: full.threadId ?? null, suggested_status: suggestion.status, reason: inheritedThread ? `Verified application thread: ${evidence.reason}` : evidence.reason,
       }, { onConflict: "user_id,mailbox_email,gmail_message_id", ignoreDuplicates: true });
       if (insertError) throw new Error("Could not save the review queue. Try syncing again.");
       imported++;
     }
     const { error: saveError } = await auth.supabase.from("email_connections").update({ page_token: writeSyncWindow({ from: window.from, next: page.nextPageToken ?? null }), last_synced_at: new Date().toISOString() }).eq("user_id", auth.userId).eq("email", connection.email).eq("connected_at", connection.connected_at);
     if (saveError) throw new Error("Could not save sync progress. Imported emails are safe; try again.");
-    revalidatePath("/email");
-    return { message: `${imported} application email${imported === 1 ? "" : "s"} added for review. ${skipped} unrelated email${skipped === 1 ? "" : "s"} skipped.${page.nextPageToken ? " Sync again to read the next batch." : ""}`, saved: Date.now() };
+    const automatic = await processPending(auth);
+    revalidatePath("/"); revalidatePath("/email");
+    return { applied: automatic.applied, clarifications: automatic.clarifications, pendingOnly: !page.nextPageToken && automatic.more, hasMore: !!page.nextPageToken || automatic.more, message: `${automatic.applied} automatic update${automatic.applied === 1 ? "" : "s"}; ${automatic.clarifications} need clarification. ${imported} application email${imported === 1 ? "" : "s"} found. ${skipped} unrelated email${skipped === 1 ? "" : "s"} skipped.`, saved: Date.now() };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Gmail sync failed. Try again." };
   }
@@ -89,8 +96,8 @@ export async function acceptEmail(_previous: MutationState, form: FormData): Pro
   const applicationId = String(form.get("application_id") ?? "");
   if (!validUuid(id) || (applicationId && !validUuid(applicationId))) return { error: "Invalid email or application." };
   if (!company || company.length > 200 || !role || role.length > 250 || !statuses.some(s => s === status)) return { error: "Check the company, role and stage." };
-  const { error } = await auth.supabase.rpc("accept_email_update", { import_id: id, company_name: company, role_name: role, new_status: status, target_application_id: applicationId || null });
-  if (error) return { error: "Could not save this update. If multiple applications share these details, select the existing application explicitly." };
+  const { data: appliedId, error } = await auth.supabase.rpc("accept_email_update", { import_id: id, company_name: company, role_name: role, new_status: status, target_application_id: applicationId || null });
+  if (error || !appliedId) return { error: "Could not save this update. If multiple applications share these details, select the existing application explicitly." };
   revalidatePath("/"); revalidatePath("/email");
   return { message: "Application and timeline updated.", saved: Date.now() };
 }
@@ -114,4 +121,42 @@ export async function disconnectGmail(): Promise<MutationState> {
   if (error) return { error: "Could not disconnect Gmail. Try again." };
   revalidatePath("/email");
   return { message: "Gmail disconnected. You can also revoke Application Buddy in your Google account permissions.", saved: Date.now() };
+}
+
+async function processPending(auth: NonNullable<Awaited<ReturnType<typeof authenticate>>>) {
+  const { data: pending, error } = await auth.supabase.from("email_imports").select("*").eq("user_id", auth.userId).eq("review_status", "pending").eq("automation_checked", false).order("received_at").limit(31);
+  if (error) throw new Error("Run the automatic email updates migration before syncing.");
+  let applied = 0, clarifications = 0;
+  for (const email of (pending ?? []).slice(0, 30)) {
+    const [apps, thread] = await Promise.all([
+      auth.supabase.from("applications").select("id, company, role").eq("user_id", auth.userId),
+      email.gmail_thread_id ? auth.supabase.from("email_imports").select("application_id").eq("user_id", auth.userId).eq("mailbox_email", email.mailbox_email).eq("gmail_thread_id", email.gmail_thread_id).eq("review_status", "applied") : Promise.resolve({ data: [], error: null }),
+    ]);
+    if (apps.error || thread.error) throw new Error("Could not match the application. Sync again.");
+    const decision = emailDecision(email, apps.data ?? [], (thread.data ?? []).map(row => row.application_id).filter(Boolean));
+    let appliedId: string | null = null;
+    if (decision?.canApply) {
+      const result = await auth.supabase.rpc("apply_email_automatically", { import_id: email.id, company_name: decision.company, role_name: decision.role, new_status: decision.status, target_application_id: decision.target?.id ?? null, task_title: decision.task, automatic: true });
+      if (result.error) throw new Error("Could not apply an email update. Your saved imports are safe; sync again.");
+      appliedId = result.data;
+    }
+    if (appliedId) applied++;
+    else {
+      const { error: saveError } = await auth.supabase.from("email_imports").update({ automation_checked: true, ...(decision ? { reason: decision.canApply ? "This application has a newer manual change. Confirm how to apply this email." : decision.clarification, suggested_company: decision.company, suggested_role: decision.role, suggested_status: decision.status ?? email.suggested_status } : { review_status: "ignored" }) }).eq("id", email.id).eq("user_id", auth.userId).eq("review_status", "pending");
+      if (saveError) throw new Error("Could not save clarification progress. Sync again.");
+      if (decision) clarifications++;
+    }
+  }
+  return { applied, clarifications, more: (pending?.length ?? 0) > 30 };
+}
+
+export async function undoEmail(_previous: MutationState, form: FormData): Promise<MutationState> {
+  const auth = await authenticate();
+  if (!auth) return { error: "Sign in again." };
+  const id = String(form.get("id") ?? "");
+  if (!validUuid(id)) return { error: "Invalid update." };
+  const { error } = await auth.supabase.rpc("undo_email_update", { import_id: id });
+  if (error) return { error: "Cannot undo while newer changes exist. Undo the newer email updates first, or edit the application directly. Completed interview tasks also protect their update." };
+  revalidatePath("/"); revalidatePath("/email");
+  return { message: "Update undone. Newly created applications remain as Saved.", saved: Date.now() };
 }

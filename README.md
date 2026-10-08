@@ -60,7 +60,7 @@ Testing-mode Google refresh tokens may expire after seven days; reconnect when n
 
 Tokens use AES-256-GCM encryption at rest. The encryption key stays server-side. Changing this key requires reconnecting Gmail. Disconnect removes stored credentials; you can additionally revoke app access in your Google account permissions. Reconnecting starts a new capture window; existing imports remain.
 
-Message matching uses a focused Gmail search followed by a classifier requiring application or interview evidence. Job alerts, postings, shopping emails, financial applications and newsletters are excluded. Short incoming replies may inherit evidence from their exact Gmail thread. Old unrelated pending imports are hidden, without deleting their stored records. This heuristic is not guaranteed to catch every recruiter email. Parsed suggestions are heuristic, not AI. Every update requires review; resume versions are not available from confirmation emails.
+Message matching uses a focused Gmail search followed by a classifier requiring application or interview evidence. Job alerts, postings, shopping emails, financial applications and newsletters are excluded. Short incoming replies may inherit evidence from their exact Gmail thread. Old unrelated pending imports are ignored during sync. This heuristic is not guaranteed to catch every recruiter email. Parsed suggestions are heuristic, not AI. Clear matches update the tracker automatically; ambiguous matches need clarification. resume versions are not available from confirmation emails.
 
 ## Checks
 
@@ -69,3 +69,14 @@ npx tsc --noEmit
 npm run lint
 npm run build
 ```
+
+
+## Automatic email updates
+
+Run `supabase/migrations/20261008_email_automation.sql` in the Supabase SQL Editor after the email reader migration, then install dependencies with `npm install`. One Sync click follows all Gmail pages and processes saved pending imports automatically. The page must remain open until sync finishes; this is not a scheduled background worker. Progress is saved after each internal batch, and failed syncs can be resumed.
+
+Clear company/role matches or a previously linked Gmail thread update the application and add an email timeline entry. New applications require explicit company, role and stage evidence. Ambiguous matches and newer manual edits go to Needs clarification. Ordinary conversation replies preserve the stage. Older confirmations may fill the applied date but cannot replace a newer email stage. Exact interview dates are retained in the excerpt for now; they are not inferred into calendar events.
+
+Recent updates link to Gmail and provide Undo. Undo restores the previous application state and removes its generated timeline entry and unchanged task; later application changes or completed tasks block Undo to avoid overwriting user work. An application created by an undone import stays as Saved. Historical interview scheduling requests older than seven days do not create tasks. Existing ignored emails stay ignored.
+
+Run `npm run test:email` for matching regression tests and PostgreSQL integration checks (including RLS, chronology, duplicate imports, tasks and Undo).

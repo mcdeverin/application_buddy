@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 export async function proxy(request: NextRequest) {
   const path=request.nextUrl.pathname;
+  if(path.startsWith("/_vercel/insights/")) return NextResponse.next({request});
   const demoPath=path==="/demo"||path.startsWith("/demo/");
   if(process.env.DEMO_ONLY==="true"&&!demoPath) return NextResponse.redirect(new URL("/demo",request.url));
   if(demoPath) {
